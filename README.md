@@ -40,7 +40,9 @@ Two properties make it usable as a gate:
 
 The service never schedules runs by itself. See
 [docs/how-tos/approval-triggered-backup.md](./docs/how-tos/approval-triggered-backup.md)
-for the API reference, a compose example and the rollback notes.
+for the API reference, a compose example and the rollback notes, and
+[TESTING.md](./TESTING.md) for a local end-to-end check that finishes with a
+restore.
 
 ---
 

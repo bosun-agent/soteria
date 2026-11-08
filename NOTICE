@@ -17,6 +17,7 @@ Added files (entirely new, no upstream code):
   cmd/backup/serve_test.go   unit tests for the above
   docs/how-tos/approval-triggered-backup.md
                              API reference and deployment notes
+  TESTING.md                 local end-to-end verification guide
   NOTICE                     this file
 
 Modified files (original upstream files, changed for the HTTP API):
