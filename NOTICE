@@ -15,8 +15,11 @@ Added files (entirely new, no upstream code):
 
   cmd/backup/serve.go        HTTP API for approval-triggered backup runs
   cmd/backup/serve_test.go   unit tests for the above
+  cmd/mcp/main.go            MCP server exposing the backup API
+  cmd/mcp/main_test.go       unit tests for the above
   docs/how-tos/approval-triggered-backup.md
                              API reference and deployment notes
+  docs/how-tos/mcp-server.md MCP tools and client configuration
   TESTING.md                 local end-to-end verification guide
   NOTICE                     this file
 

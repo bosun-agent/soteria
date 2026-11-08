@@ -38,9 +38,14 @@ Two properties make it usable as a gate:
 - success is only reported after the archive was found on disk, so a run that
   archives and discards its output fails the request instead of passing it.
 
+The same gate is also available as a Model Context Protocol server
+(`cmd/mcp`, built with the official Go SDK) so an agent runtime can request a
+backup and receive the verified artifact without shelling out.
+
 The service never schedules runs by itself. See
 [docs/how-tos/approval-triggered-backup.md](./docs/how-tos/approval-triggered-backup.md)
-for the API reference, a compose example and the rollback notes, and
+for the API reference, a compose example and the rollback notes,
+[docs/how-tos/mcp-server.md](./docs/how-tos/mcp-server.md) for the MCP tools, and
 [TESTING.md](./TESTING.md) for a local end-to-end check that finishes with a
 restore.
 
