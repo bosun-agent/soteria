@@ -97,6 +97,53 @@ destruction as separate tools. Expose a single tool that performs
 reach the destructive step. That gate has to hold the Docker socket, which this
 server deliberately does not.
 
+## Registering with docker-agent
+
+docker-agent attaches local stdio servers with `type: mcp` (`command` + `args` + `env`).
+Build the binary first, then point the toolset at it:
+
+```console
+$ go build -o /usr/local/bin/mcp-soteria ./cmd/mcp
+```
+
+```yaml
+agents:
+  root:
+    model: openai/gpt-5-mini
+    description: Docker 관리 에이전트
+    instruction: |
+      Before changing or removing containers, state a short plan and wait for
+      confirmation. Answer in Korean.
+    toolsets:
+      - type: mcp
+        command: /usr/local/bin/mcp-soteria
+        env:
+          SOTERIA_API: "http://127.0.0.1:8080"
+        instruction: Use backup_volume before any destructive volume operation.
+
+permissions:
+  allow:
+    # backup_volume is a write: docker-agent labels a tool with no
+    # destructive_hint and no read_only_hint as "unknown", and the default
+    # restricted mode denies unknown tools outright. Grant it explicitly.
+    - backup_volume
+```
+
+Two things decide whether the tools are usable at all:
+
+| Tool | Annotations | docker-agent label | Needed |
+| --- | --- | --- | --- |
+| `backup_status` | `readOnlyHint: true` | safe | allowed by default |
+| `backup_volume` | `destructiveHint: false`, `readOnlyHint: false` | **unknown** | must be in `permissions.allow` |
+
+Adding a `name` to the toolset changes the exposed tool names to `<name>_<tool>`;
+without it the raw names are used, so the permission entries above match as-is.
+
+`SOTERIA_API` has to be reachable **from the process running the MCP server**:
+`127.0.0.1:8080` when docker-agent runs on the host, and
+`http://host.docker.internal:8080` (plus `extra_hosts: [host.docker.internal:host-gateway]`)
+when it runs in a container with the backup API on the host.
+
 ## Tests
 
 ```console

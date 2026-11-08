@@ -98,6 +98,8 @@ type statusArgs struct {
 	JobID string `json:"job_id" jsonschema:"the job id returned by backup_volume"`
 }
 
+func boolPtr(v bool) *bool { return &v }
+
 func textResult(v any) *mcp.CallToolResult {
 	payload, _ := json.MarshalIndent(v, "", "  ")
 	return &mcp.CallToolResult{
@@ -186,10 +188,25 @@ func newServer(c *apiClient) *mcp.Server {
 		Description: "Create a backup of a Docker volume and return the verified artifact " +
 			"(path, size, sha256). Use this before any destructive action on the volume's data. " +
 			"Set wait=true to block until the archive exists on disk; otherwise poll with backup_status.",
+		Annotations: &mcp.ToolAnnotations{
+			Title: "Backup volume",
+			// The run writes an archive but does not remove or overwrite data, so
+			// it is additive. Runtimes that gate on annotations see "not
+			// destructive" and still have to be granted the tool explicitly in
+			// restricted mode, because the hint alone is not a permission.
+			ReadOnlyHint:    false,
+			DestructiveHint: boolPtr(false),
+			IdempotentHint:  false,
+			OpenWorldHint:   boolPtr(false),
+		},
 	}, c.backupVolume)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "backup_status",
 		Description: "Look up a backup run started by backup_volume and report its status and verified artifact.",
+		Annotations: &mcp.ToolAnnotations{
+			Title:        "Backup status",
+			ReadOnlyHint: true,
+		},
 	}, c.backupStatus)
 	return s
 }
