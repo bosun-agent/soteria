@@ -1,0 +1,7 @@
+{{ define "title_success" -}}
+Successful test run with {{ env "EXTRA_VALUE" }}, yay!
+{{- end }}
+
+{{ define "body_success" -}}
+Backing up {{ .Stats.BackupFile.FullPath }} succeeded.
+{{- end }}

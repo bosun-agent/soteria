@@ -1,0 +1,48 @@
+services:
+  storage:
+    image: versity/versitygw:v1.8.0
+    environment:
+      ROOT_ACCESS_KEY: test
+      ROOT_SECRET_KEY: GMusLtUmILge2by+z890kQ
+      VGW_BACKEND: posix
+      VGW_BACKEND_ARGS: /data
+    entrypoint: /bin/sh -c 'mkdir -p /data/backup && /usr/local/bin/docker-entrypoint.sh'
+    volumes:
+      - storage_data:/data
+
+  backup:
+    image: offen/docker-volume-backup:${TEST_VERSION:-canary}
+    hostname: hostnametoken
+    depends_on:
+      - storage
+    restart: always
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: GMusLtUmILge2by+z890kQ
+      AWS_ENDPOINT: storage:7070
+      AWS_ENDPOINT_PROTO: http
+      AWS_S3_BUCKET_NAME: backup
+      BACKUP_FILENAME_EXPAND: 'true'
+      BACKUP_FILENAME: test-$$HOSTNAME.tar.gz
+      BACKUP_CRON_EXPRESSION: 0 0 5 31 2 ?
+      BACKUP_RETENTION_DAYS: 7
+      BACKUP_PRUNING_LEEWAY: 5s
+      BACKUP_PRUNING_PREFIX: test
+      BACKUP_LATEST_SYMLINK: test-$$HOSTNAME.latest.tar.gz
+      BACKUP_SKIP_BACKENDS_FROM_PRUNE: 's3'
+    volumes:
+      - app_data:/backup/app_data:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${LOCAL_DIR:-./local}:/archive
+
+  offen:
+    image: offen/offen:latest
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    volumes:
+      - app_data:/var/opt/offen
+
+volumes:
+  app_data:
+  storage_data:
+    name: storage_data

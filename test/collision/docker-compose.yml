@@ -1,0 +1,26 @@
+# Copyright 2020-2021 - offen.software <hioffen@posteo.de>
+# SPDX-License-Identifier: Unlicense
+
+services:
+  backup:
+    image: offen/docker-volume-backup:${TEST_VERSION:-canary}
+    environment:
+      BACKUP_FILENAME: test.tar.gz
+    volumes:
+      - offen_data:/backup/offen_data:ro
+      - ${LOCAL_DIR:-./local}:/archive
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  offen:
+    image: offen/offen:latest
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    deploy:
+      labels:
+        - docker-volume-backup.stop-during-backup=true
+      replicas: 2
+    volumes:
+      - offen_data:/var/opt/offen
+
+volumes:
+  offen_data:

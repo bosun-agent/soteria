@@ -1,0 +1,478 @@
+// Copyright 2022 - offen.software <hioffen@posteo.de>
+// SPDX-License-Identifier: MPL-2.0
+
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/x509"
+	"encoding/pem"
+	"fmt"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"text/template"
+	"time"
+
+	"github.com/offen/docker-volume-backup/internal/errwrap"
+)
+
+// Config holds all configuration values that are expected to be set
+// by users.
+type Config struct {
+	AwsS3BucketName                      string          `split_words:"true"`
+	AwsS3Path                            string          `split_words:"true"`
+	AwsEndpoint                          string          `split_words:"true" default:"s3.amazonaws.com"`
+	AwsEndpointProto                     string          `split_words:"true" default:"https"`
+	AwsEndpointInsecure                  bool            `split_words:"true"`
+	AwsEndpointCACert                    CertDecoder     `envconfig:"AWS_ENDPOINT_CA_CERT"`
+	AwsStorageClass                      string          `split_words:"true"`
+	AwsAccessKeyID                       string          `envconfig:"AWS_ACCESS_KEY_ID"`
+	AwsSecretAccessKey                   string          `split_words:"true"`
+	AwsIamRoleEndpoint                   string          `split_words:"true"`
+	AwsPartSize                          int64           `split_words:"true"`
+	AwsS3BucketLookup                    S3BucketLookup  `split_words:"true" default:"auto"`
+	BackupCompression                    CompressionType `split_words:"true" default:"gz"`
+	GzipParallelism                      WholeNumber     `split_words:"true" default:"1"`
+	BackupSources                        string          `split_words:"true" default:"/backup"`
+	BackupFilename                       string          `split_words:"true" default:"backup-%Y-%m-%dT%H-%M-%S.{{ .Extension }}"`
+	BackupFilenameExpand                 bool            `split_words:"true"`
+	BackupLatestSymlink                  string          `split_words:"true"`
+	BackupArchive                        string          `split_words:"true" default:"/archive"`
+	BackupCronExpression                 string          `split_words:"true" default:"@daily"`
+	BackupJitter                         time.Duration   `split_words:"true" default:"0s"`
+	BackupRetentionDays                  int32           `split_words:"true" default:"-1"`
+	BackupPruningLeeway                  time.Duration   `split_words:"true" default:"1m"`
+	BackupPruningPrefix                  string          `split_words:"true"`
+	BackupStopContainerLabel             string          `split_words:"true"`
+	BackupStopDuringBackupLabel          string          `split_words:"true" default:"true"`
+	BackupStopDuringBackupNoRestartLabel string          `split_words:"true" default:"true"`
+	BackupLabelMatchBehavior             MatchBehavior   `split_words:"true" default:"match"`
+	BackupLabelMatchSeparator            string          `split_words:"true" default:","`
+	BackupStopServiceTimeout             time.Duration   `split_words:"true" default:"5m"`
+	BackupFromSnapshot                   bool            `split_words:"true"`
+	BackupExcludeRegexp                  RegexpDecoder   `split_words:"true"`
+	BackupSkipBackendsFromPrune          []string        `split_words:"true"`
+	GpgPassphrase                        string          `split_words:"true"`
+	GpgPublicKeyRing                     string          `split_words:"true"`
+	GpgOutput                            GpgOutput       `split_words:"true" default:"binary"`
+	AgePassphrase                        string          `split_words:"true"`
+	AgePublicKeys                        []string        `split_words:"true"`
+	NotificationURLs                     []string        `envconfig:"NOTIFICATION_URLS"`
+	NotificationLevel                    string          `split_words:"true" default:"error"`
+	EmailNotificationRecipient           string          `split_words:"true"`
+	EmailNotificationSender              string          `split_words:"true" default:"noreply@nohost"`
+	EmailSMTPHost                        string          `envconfig:"EMAIL_SMTP_HOST"`
+	EmailSMTPPort                        int             `envconfig:"EMAIL_SMTP_PORT" default:"587"`
+	EmailSMTPUsername                    string          `envconfig:"EMAIL_SMTP_USERNAME"`
+	EmailSMTPPassword                    string          `envconfig:"EMAIL_SMTP_PASSWORD"`
+	WebdavUrl                            string          `split_words:"true"`
+	WebdavUrlInsecure                    bool            `split_words:"true"`
+	WebdavPath                           string          `split_words:"true" default:"/"`
+	WebdavUsername                       string          `split_words:"true"`
+	WebdavPassword                       string          `split_words:"true"`
+	SSHHostName                          string          `split_words:"true"`
+	SSHPort                              string          `split_words:"true" default:"22"`
+	SSHHostPublicKey                     string          `split_words:"true"`
+	SSHKnownHostsFile                    string          `split_words:"true"`
+	SSHUser                              string          `split_words:"true"`
+	SSHPassword                          string          `split_words:"true"`
+	SSHIdentityFile                      string          `split_words:"true" default:"/root/.ssh/id_rsa"`
+	SSHIdentityPassphrase                string          `split_words:"true"`
+	SSHRemotePath                        string          `split_words:"true"`
+	SSHInsecureIgnoreHostKey             bool            `split_words:"true"`
+	SSHUploadRetries                     WholeNumber     `split_words:"true" default:"0"`
+	SSHUploadRetryDelay                  time.Duration   `split_words:"true" default:"5s"`
+	ExecLabel                            string          `split_words:"true"`
+	ExecForwardOutput                    bool            `split_words:"true"`
+	LockTimeout                          time.Duration   `split_words:"true" default:"60m"`
+	AzureStorageAccountName              string          `split_words:"true"`
+	AzureStoragePrimaryAccountKey        string          `split_words:"true"`
+	AzureStorageConnectionString         string          `split_words:"true"`
+	AzureStorageContainerName            string          `split_words:"true"`
+	AzureStoragePath                     string          `split_words:"true"`
+	AzureStorageEndpoint                 string          `split_words:"true" default:"https://{{ .AccountName }}.blob.core.windows.net/"`
+	AzureStorageAccessTier               string          `split_words:"true"`
+	DropboxEndpoint                      string          `split_words:"true" default:"https://api.dropbox.com/"`
+	DropboxOAuth2Endpoint                string          `envconfig:"DROPBOX_OAUTH2_ENDPOINT" default:"https://api.dropbox.com/"`
+	DropboxRefreshToken                  string          `split_words:"true"`
+	DropboxAppKey                        string          `split_words:"true"`
+	DropboxAppSecret                     string          `split_words:"true"`
+	DropboxRemotePath                    string          `split_words:"true"`
+	DropboxConcurrencyLevel              NaturalNumber   `split_words:"true" default:"6"`
+	GoogleDriveCredentialsJSON           string          `split_words:"true"`
+	GoogleDriveFolderID                  string          `split_words:"true"`
+	GoogleDriveImpersonateSubject        string          `split_words:"true"`
+	GoogleDriveEndpoint                  string          `split_words:"true"`
+	GoogleDriveTokenURL                  string          `split_words:"true"`
+	GoogleDriveTeamDriveID               string          `split_words:"true"`
+	Timezone                             string          `envconfig:"TZ"`
+	source                               string
+	additionalEnvVars                    map[string]string
+}
+
+type S3BucketLookup string
+
+func (l *S3BucketLookup) Decode(v string) error {
+	switch v {
+	case "auto", "dns", "virtual", "path":
+		*l = S3BucketLookup(v)
+		return nil
+	default:
+		return errwrap.Wrap(nil, fmt.Sprintf("unknown bucket lookup '%s', expected one of 'auto', 'dns', 'virtual', 'path'", v))
+	}
+}
+
+func (l *S3BucketLookup) String() string {
+	return string(*l)
+}
+
+type CompressionType string
+
+func (c *CompressionType) Decode(v string) error {
+	switch v {
+	case "none", "gz", "zst":
+		*c = CompressionType(v)
+		return nil
+	default:
+		return errwrap.Wrap(nil, fmt.Sprintf("unknown compression type '%s', expected one of 'none', 'gz', 'zst'", v))
+	}
+}
+
+func (c *CompressionType) String() string {
+	return string(*c)
+}
+
+type GpgOutput string
+
+func (g *GpgOutput) Decode(v string) error {
+	switch v {
+	case "armored", "binary":
+		*g = GpgOutput(v)
+		return nil
+	default:
+		return errwrap.Wrap(nil, fmt.Sprintf("unknown gpg output '%s', expected one of 'armored', 'binary'", v))
+	}
+}
+
+func (g *GpgOutput) String() string {
+	return string(*g)
+}
+
+// MatchBehavior controls how the value of a container's stop-during-backup
+// label is matched against the value configured on this instance. With "match"
+// the values have to be equal. With "one-of" the container's label value is
+// split on BACKUP_LABEL_MATCH_SEPARATOR (a comma by default) so a single
+// container can be targeted by multiple instances, each configured with a
+// different value.
+type MatchBehavior string
+
+func (l *MatchBehavior) Decode(v string) error {
+	switch v {
+	case "match", "one-of":
+		*l = MatchBehavior(v)
+		return nil
+	default:
+		return errwrap.Wrap(nil, fmt.Sprintf("unknown match behavior '%s', expected one of 'match', 'one-of'", v))
+	}
+}
+
+func (l *MatchBehavior) String() string {
+	return string(*l)
+}
+
+type CertDecoder struct {
+	Cert *x509.Certificate
+}
+
+func (c *CertDecoder) Decode(v string) error {
+	if v == "" {
+		return nil
+	}
+	content, err := os.ReadFile(v)
+	if err != nil {
+		content = []byte(v)
+	}
+	block, _ := pem.Decode(content)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return errwrap.Wrap(err, "error parsing certificate")
+	}
+	*c = CertDecoder{Cert: cert}
+	return nil
+}
+
+type RegexpDecoder struct {
+	Re *regexp.Regexp
+}
+
+func (r *RegexpDecoder) Decode(v string) error {
+	if v == "" {
+		return nil
+	}
+	re, err := regexp.Compile(v)
+	if err != nil {
+		return errwrap.Wrap(err, fmt.Sprintf("error compiling given regexp `%s`", v))
+	}
+	*r = RegexpDecoder{Re: re}
+	return nil
+}
+
+// NaturalNumber is a type that can be used to decode a positive, non-zero natural number
+type NaturalNumber int
+
+func (n *NaturalNumber) Decode(v string) error {
+	asInt, err := strconv.Atoi(v)
+	if err != nil {
+		return errwrap.Wrap(nil, fmt.Sprintf("error converting %s to int", v))
+	}
+	if asInt <= 0 {
+		return errwrap.Wrap(nil, fmt.Sprintf("expected a natural number, got %d", asInt))
+	}
+	*n = NaturalNumber(asInt)
+	return nil
+}
+
+func (n *NaturalNumber) Int() int {
+	return int(*n)
+}
+
+// WholeNumber is a type that can be used to decode a positive whole number, including zero
+type WholeNumber int
+
+func (n *WholeNumber) Decode(v string) error {
+	asInt, err := strconv.Atoi(v)
+	if err != nil {
+		return errwrap.Wrap(nil, fmt.Sprintf("error converting %s to int", v))
+	}
+	if asInt < 0 {
+		return errwrap.Wrap(nil, fmt.Sprintf("expected a whole, positive number, including zero. Got %d", asInt))
+	}
+	*n = WholeNumber(asInt)
+	return nil
+}
+
+func (n *WholeNumber) Int() int {
+	return int(*n)
+}
+
+type envVarLookup struct {
+	ok    bool
+	key   string
+	value string
+}
+
+// applyEnv sets the values in `additionalEnvVars` as environment variables.
+// It returns a function that reverts all values that have been set to its
+// previous state.
+func (c *Config) applyEnv() (func() error, error) {
+	lookups := []envVarLookup{}
+
+	unset := func() error {
+		for _, lookup := range lookups {
+			if !lookup.ok {
+				if err := os.Unsetenv(lookup.key); err != nil {
+					return errwrap.Wrap(err, fmt.Sprintf("error unsetting env var %s", lookup.key))
+				}
+				continue
+			}
+			if err := os.Setenv(lookup.key, lookup.value); err != nil {
+				return errwrap.Wrap(err, fmt.Sprintf("error setting back env var %s", lookup.key))
+			}
+		}
+		return nil
+	}
+
+	for key, value := range c.additionalEnvVars {
+		current, ok := os.LookupEnv(key)
+		lookups = append(lookups, envVarLookup{ok: ok, key: key, value: current})
+		if err := os.Setenv(key, value); err != nil {
+			return unset, errwrap.Wrap(err, "error setting env var")
+		}
+	}
+	return unset, nil
+}
+
+// resolve is responsible for performing all implicit logic that transforms a configuration object
+// into what is actually being used at runtime. E.g. environment variables are expanded or
+// deprecated config options are transposed into their up to date successors. The caller is
+// responsible for calling the returned reset function after usage of the config is done.
+func (c *Config) resolve() (reset func() error, warnings []string, err error) {
+	reset, aErr := c.applyEnv()
+	if aErr != nil {
+		err = errwrap.Wrap(aErr, "error applying env")
+		return
+	}
+
+	if _, ok := hookLevels[c.NotificationLevel]; !ok {
+		err = errwrap.Wrap(nil, fmt.Sprintf("unknown NOTIFICATION_LEVEL %s", c.NotificationLevel))
+		return
+	}
+
+	if c.BackupFilenameExpand {
+		c.BackupFilename = os.ExpandEnv(c.BackupFilename)
+		c.BackupLatestSymlink = os.ExpandEnv(c.BackupLatestSymlink)
+		c.BackupPruningPrefix = os.ExpandEnv(c.BackupPruningPrefix)
+	}
+
+	if c.EmailNotificationRecipient != "" {
+		emailURL := fmt.Sprintf(
+			"smtp://%s:%s@%s:%d/?from=%s&to=%s",
+			c.EmailSMTPUsername,
+			c.EmailSMTPPassword,
+			c.EmailSMTPHost,
+			c.EmailSMTPPort,
+			c.EmailNotificationSender,
+			c.EmailNotificationRecipient,
+		)
+		c.NotificationURLs = append(c.NotificationURLs, emailURL)
+		warnings = append(warnings,
+			"Using EMAIL_* keys for providing notification configuration has been deprecated and will be removed in the next major version.",
+			"Please use NOTIFICATION_URLS instead. Refer to the README for an upgrade guide.",
+		)
+	}
+
+	if c.BackupFromSnapshot {
+		warnings = append(warnings,
+			"Using BACKUP_FROM_SNAPSHOT has been deprecated and will be removed in the next major version.",
+			"Please use `archive-pre` and `archive-post` commands to prepare your backup sources. Refer to the documentation for an upgrade guide.",
+		)
+	}
+
+	if c.BackupStopContainerLabel != "" {
+		// BACKUP_STOP_DURING_BACKUP_LABEL defaults to true, so the parsed values
+		// cannot tell whether the user has set it on purpose. Look at the
+		// environment instead, the same way DOCKER_HOST is checked in script.go.
+		if os.Getenv("BACKUP_STOP_DURING_BACKUP_LABEL") != "" {
+			err = errwrap.Wrap(nil, "both BACKUP_STOP_DURING_BACKUP_LABEL and BACKUP_STOP_CONTAINER_LABEL have been set, cannot continue")
+			return
+		}
+		warnings = append(warnings,
+			"Using BACKUP_STOP_CONTAINER_LABEL has been deprecated and will be removed in the next major version.",
+			"Please use BACKUP_STOP_DURING_BACKUP_LABEL instead. Refer to the docs for an upgrade guide.",
+		)
+		c.BackupStopDuringBackupLabel = c.BackupStopContainerLabel
+	}
+
+	tmplFileName, tErr := template.New("extension").Parse(c.BackupFilename)
+	if tErr != nil {
+		err = errwrap.Wrap(tErr, "unable to parse backup file extension template")
+		return
+	}
+
+	var bf bytes.Buffer
+	if tErr := tmplFileName.Execute(&bf, map[string]string{
+		"Extension": func() string {
+			if c.BackupCompression == "none" {
+				return "tar"
+			}
+			return fmt.Sprintf("tar.%s", c.BackupCompression)
+		}(),
+	}); tErr != nil {
+		err = errwrap.Wrap(tErr, "error executing backup file extension template")
+		return
+	}
+	c.BackupFilename = bf.String()
+
+	if c.AzureStorageEndpoint != "" {
+		endpointTemplate, tErr := template.New("endpoint").Parse(c.AzureStorageEndpoint)
+		if tErr != nil {
+			err = errwrap.Wrap(tErr, "error parsing endpoint template")
+			return
+		}
+		var ep bytes.Buffer
+		if tErr := endpointTemplate.Execute(&ep, map[string]string{"AccountName": c.AzureStorageAccountName}); tErr != nil {
+			err = errwrap.Wrap(tErr, "error executing endpoint template")
+			return
+		}
+		c.AzureStorageEndpoint = fmt.Sprintf("%s/", strings.TrimSuffix(ep.String(), "/"))
+	}
+
+	if c.SSHHostName != "" && !c.SSHInsecureIgnoreHostKey {
+		if c.SSHHostPublicKey == "" && c.SSHKnownHostsFile == "" {
+			err = errwrap.Wrap(nil, "SSH hostname given without a public key or known_hosts, refer to the documentation for guidance")
+			return
+		}
+	}
+	return
+}
+
+func mountedPaths(path string) (map[string]struct{}, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	mounts := make(map[string]struct{})
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.SplitN(line, " - ", 2)
+		fields := strings.Fields(parts[0])
+		if len(fields) < 5 {
+			continue
+		}
+		mounts[fields[4]] = struct{}{}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return mounts, nil
+}
+
+func (c *Config) timezoneDeprecationWarnings() ([]string, error) {
+	mounts, err := mountedPaths("/proc/self/mountinfo")
+	if err != nil {
+		return nil, errwrap.Wrap(err, "error reading mount info")
+	}
+
+	deprecatedMounts := []string{
+		"/etc/timezone",
+		"/etc/localtime",
+		"/usr/share/zoneinfo",
+	}
+
+	var found []string
+	for _, mnt := range deprecatedMounts {
+		if _, ok := mounts[mnt]; ok {
+			found = append(found, mnt)
+		}
+	}
+
+	if len(found) == 0 {
+		return nil, nil
+	}
+
+	var warnings []string
+
+	// Primary deprecation message (compressed)
+	warnings = append(warnings,
+		fmt.Sprintf(
+			"Deprecated timezone bind mounts detected: %s. Support for these will be removed in a future version.",
+			strings.Join(found, ", "),
+		),
+	)
+
+	// Guidance based on TZ usage
+	if c.Timezone == "" {
+		warnings = append(warnings,
+			"Set the container timezone using the `TZ` environment variable instead.",
+			"Refer to the documentation for migration details.",
+		)
+	} else {
+		warnings = append(warnings,
+			fmt.Sprintf(
+				"`TZ=%s` is set, but deprecated timezone bind mounts are still present. Remove the bind mounts after confirming timezone handling works as expected.",
+				c.Timezone,
+			),
+		)
+	}
+
+	return warnings, nil
+}

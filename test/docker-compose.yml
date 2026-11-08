@@ -1,0 +1,45 @@
+services:
+  manager: &node
+    hostname: manager
+    privileged: true
+    image: offen/docker-volume-backup:test-sandbox
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 1s
+      timeout: 5s
+      retries: 50
+    volumes:
+      - ./:/code
+      - ${DOCKER_CONFIG_FILE:-./docker-config.json}:/root/.docker/config.json
+      - ${TARBALL:-.}:/cache/image.tar.gz
+      - docker_volume_backup_test_sandbox_image:/var/lib/docker/image
+      - docker_volume_backup_test_sandbox_containerd:/var/lib/docker/containerd
+
+  worker1:
+    <<: *node
+    hostname: worker1
+    volumes:
+      - ./:/code
+      - ${DOCKER_CONFIG_FILE:-./docker-config.json}:/root/.docker/config.json
+      - ${TARBALL:-.}:/cache/image.tar.gz
+      - docker_volume_backup_test_sandbox_image:/var/lib/docker/image
+      - docker_volume_backup_test_sandbox_containerd_1:/var/lib/docker/containerd
+    profiles:
+      - multinode
+  worker2:
+    <<: *node
+    hostname: worker2
+    volumes:
+      - ./:/code
+      - ${DOCKER_CONFIG_FILE:-./docker-config.json}:/root/.docker/config.json
+      - ${TARBALL:-.}:/cache/image.tar.gz
+      - docker_volume_backup_test_sandbox_image:/var/lib/docker/image
+      - docker_volume_backup_test_sandbox_containerd_2:/var/lib/docker/containerd
+    profiles:
+      - multinode
+
+volumes:
+  docker_volume_backup_test_sandbox_image:
+  docker_volume_backup_test_sandbox_containerd:
+  docker_volume_backup_test_sandbox_containerd_1:
+  docker_volume_backup_test_sandbox_containerd_2:

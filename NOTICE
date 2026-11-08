@@ -1,0 +1,30 @@
+This repository is a fork of docker-volume-backup.
+
+Upstream:  https://github.com/offen/docker-volume-backup
+Copyright: 2021-2026 offen.software <hioffen@posteo.de> and contributors
+License:   Mozilla Public License 2.0 (see LICENSE)
+Base:      f9084cd9c5da3db8a65dce0e3769c57a8303ea90 (2026-11-04)
+
+The upstream source is distributed under the Mozilla Public License 2.0, which is
+a file-level copyleft license: modifications to a covered file have to be made
+available under the same license. This fork keeps the upstream files in place and
+publishes its changes here. Files that were modified, and files that were added,
+are listed below.
+
+Added files (entirely new, no upstream code):
+
+  cmd/backup/serve.go        HTTP API for approval-triggered backup runs
+  cmd/backup/serve_test.go   unit tests for the above
+  docs/how-tos/approval-triggered-backup.md
+                             API reference and deployment notes
+  NOTICE                     this file
+
+Modified files (original upstream files, changed for the HTTP API):
+
+  cmd/backup/main.go         adds the -http-addr flag and the serve command
+  cmd/backup/run_script.go   adds the onStats callback to runScriptOpts
+  README.md                  adds the fork notice section
+
+All other files are unmodified upstream code and remain under their original
+copyright. Portions of cmd/backup/exec.go were taken from moby and are licensed
+under Apache-2.0, as noted in that file.
