@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -450,6 +451,18 @@ func runServe(addr string) error {
 	mux.HandleFunc("/healthz", s.handleHealth)
 
 	s.logger.Info("starting approval-triggered backup API", "addr", addr)
+
+	// The API authenticates nobody, so anybody who can reach the address can
+	// start a run and read artifact paths and digests. Binding every interface
+	// is the right default inside a container (a published port cannot reach a
+	// socket that only listens on the container's loopback), but it has to be a
+	// conscious choice.
+	if host, _, err := net.SplitHostPort(addr); err == nil && (host == "" || host == "0.0.0.0" || host == "::") {
+		s.logger.Warn(
+			"the API accepts connections from every host that can reach this address and requires no authentication; publish it on 127.0.0.1 instead (for example -p 127.0.0.1:8080:8080), or pass -http-addr 127.0.0.1:<port> when running the binary directly",
+			"addr", addr,
+		)
+	}
 
 	srv := &http.Server{
 		Addr:              addr,
