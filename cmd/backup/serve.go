@@ -26,6 +26,11 @@ const (
 	jobStatusFailed    = "failed"
 )
 
+// defaultArchivePath is where a run writes its artifact when the caller does not
+// name a location. It matches the image's BACKUP_ARCHIVE default and is expected
+// to be mounted into the container.
+const defaultArchivePath = "/archive"
+
 // backupRequest is the JSON body accepted by POST /v1/backups. It describes a
 // single backup run that was triggered by an external approval workflow. The
 // server never decides *whether* a backup should happen: it only executes the
@@ -42,7 +47,8 @@ type backupRequest struct {
 	// volume has to be mounted into the container before the server starts.
 	Source string `json:"source"`
 	// Archive is the directory the archive is written to. It doubles as the
-	// rollback source, so it is required and has to exist.
+	// rollback source, so it has to exist and be writable; when it is left out
+	// the run falls back to BACKUP_ARCHIVE, or to defaultArchivePath.
 	Archive string `json:"archive,omitempty"`
 	// Filename overrides the generated file name. Defaults to
 	// job-<job_id>.<extension> so callers can find the artifact deterministically.
@@ -207,7 +213,14 @@ func validateRequest(req *backupRequest) error {
 		return fmt.Errorf("source %q is not readable: %w", source, err)
 	}
 	if strings.TrimSpace(req.Archive) == "" {
-		return fmt.Errorf("archive is required: a backup without a local artifact cannot be verified")
+		// A caller should not have to know where the image keeps its artifacts,
+		// so an omitted archive is filled in. The directory still has to exist:
+		// the artifact on disk is what the gate verifies.
+		if fromEnv := strings.TrimSpace(os.Getenv("BACKUP_ARCHIVE")); fromEnv != "" {
+			req.Archive = fromEnv
+		} else {
+			req.Archive = defaultArchivePath
+		}
 	}
 	archive, err := filepath.Abs(req.Archive)
 	if err != nil {

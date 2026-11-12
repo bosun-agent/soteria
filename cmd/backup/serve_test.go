@@ -42,11 +42,6 @@ func TestValidateRequest(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "archive missing",
-			req:     backupRequest{Source: source},
-			wantErr: true,
-		},
-		{
 			name:    "archive does not exist",
 			req:     backupRequest{Source: source, Archive: filepath.Join(dir, "nope")},
 			wantErr: true,
@@ -67,6 +62,49 @@ func TestValidateRequest(t *testing.T) {
 				t.Fatalf("expected no error, got %v", err)
 			}
 		})
+	}
+}
+
+// An omitted archive is filled in rather than refused: the caller only has to
+// name the volume it wants to protect.
+func TestValidateRequestUsesEnvArchiveWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "data")
+	archive := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(archive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BACKUP_ARCHIVE", archive)
+
+	req := backupRequest{Source: source}
+	if err := validateRequest(&req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Archive != archive {
+		t.Errorf("Archive = %q, want %q", req.Archive, archive)
+	}
+}
+
+func TestValidateRequestFallsBackToTheDefaultArchive(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "data")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BACKUP_ARCHIVE", "")
+
+	req := backupRequest{Source: source}
+	err := validateRequest(&req)
+	if req.Archive != defaultArchivePath {
+		t.Errorf("Archive = %q, want %q", req.Archive, defaultArchivePath)
+	}
+	// The default directory is normally not mounted in the test environment, so
+	// the run has to be refused with a message about it.
+	if _, statErr := os.Stat(defaultArchivePath); statErr != nil && err == nil {
+		t.Fatalf("expected the missing %s to be reported", defaultArchivePath)
 	}
 }
 
