@@ -5,6 +5,10 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,5 +224,33 @@ func TestValidateRequestRejectsNamesThatEscapeTheArchive(t *testing.T) {
 				t.Fatalf("expected no error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestHandleCreateRequiresJSONContentType(t *testing.T) {
+	s := &backupServer{
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		registry: newJobRegistry(),
+	}
+
+	// A body sent as text/plain would be delivered by a browser without a
+	// preflight, so it must not start a run.
+	req := httptest.NewRequest(http.MethodPost, "/v1/backups", strings.NewReader(`{"source":"/backup/target"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	s.handleCreate(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusUnsupportedMediaType, rec.Body.String())
+	}
+
+	// With the JSON media type the request reaches validation instead. The
+	// source does not exist here, so the run is refused with 400.
+	req = httptest.NewRequest(http.MethodPost, "/v1/backups",
+		strings.NewReader(`{"source":"/backup/target","archive":"`+t.TempDir()+`"}`))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	rec = httptest.NewRecorder()
+	s.handleCreate(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }

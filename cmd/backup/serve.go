@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -318,6 +319,18 @@ func (s *backupServer) runJob(id string, req *backupRequest) *jobResult {
 func (s *backupServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// The API reads JSON only. Demanding the media type also keeps a random web
+	// page from triggering a run from the user's browser: a cross-origin request
+	// carrying this header is preceded by a preflight that the server never
+	// allows, while a `text/plain` body would be sent without one.
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{
+			"error": "Content-Type must be application/json",
+		})
 		return
 	}
 
