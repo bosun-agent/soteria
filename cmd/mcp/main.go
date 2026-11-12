@@ -211,12 +211,17 @@ func newServer(c *apiClient) *mcp.Server {
 	return s
 }
 
+// defaultAPIBase is where the backup API is expected to be reachable. The API
+// itself listens on 8080 inside its container; on the host it is published on
+// 18081, because 8080 is what docker-agent's own `serve api` binds by default.
+const defaultAPIBase = "http://127.0.0.1:18081"
+
 func main() {
 	logger := log.New(os.Stderr, "mcp-soteria ", log.LstdFlags)
 
 	base := os.Getenv("SOTERIA_API")
 	if base == "" {
-		base = "http://127.0.0.1:8080"
+		base = defaultAPIBase
 	}
 
 	logger.Printf("serving on stdio, api=%s", base)
