@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,34 @@ const (
 // name a location. It matches the image's BACKUP_ARCHIVE default and is expected
 // to be mounted into the container.
 const defaultArchivePath = "/archive"
+
+// defaultMaxRetentionDays bounds how long a gate backup may live. A gate run
+// must never keep an archive forever: an artifact nobody removes fills the disk,
+// and the rollback this service protects happens right after the approval, not a
+// year later. Override with BACKUP_MAX_RETENTION_DAYS.
+const defaultMaxRetentionDays int32 = 365
+
+// maxRetentionDays returns the upper bound for a retention period.
+func maxRetentionDays() int32 {
+	if raw := strings.TrimSpace(os.Getenv("BACKUP_MAX_RETENTION_DAYS")); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 32); err == nil && n > 0 {
+			return int32(n)
+		}
+	}
+	return defaultMaxRetentionDays
+}
+
+// clampRetentionDays maps a configured retention period into the range a gate
+// backup may use and reports whether it had to be adjusted. The upstream default
+// disables pruning (BACKUP_RETENTION_DAYS=-1), which a run triggered through the
+// API must not inherit.
+func clampRetentionDays(configured int32) (int32, bool) {
+	max := maxRetentionDays()
+	if configured < 1 || configured > max {
+		return max, true
+	}
+	return configured, false
+}
 
 // backupRequest is the JSON body accepted by POST /v1/backups. It describes a
 // single backup run that was triggered by an external approval workflow. The
@@ -203,6 +232,11 @@ func validateRequest(req *backupRequest) error {
 			return err
 		}
 	}
+	if req.RetentionDays != nil {
+		if days := *req.RetentionDays; days < 1 || days > maxRetentionDays() {
+			return fmt.Errorf("retention_days must be between 1 and %d: a gate backup is not kept forever", maxRetentionDays())
+		}
+	}
 	if strings.TrimSpace(req.Source) == "" {
 		return fmt.Errorf("source is required")
 	}
@@ -302,6 +336,17 @@ func (s *backupServer) runJob(id string, req *backupRequest) *jobResult {
 	c, err := configFromRequest(req)
 	if err != nil {
 		return fail(fmt.Errorf("error building configuration: %w", err))
+	}
+
+	// A run triggered through the API is never allowed to keep its archive
+	// forever, not even when the container was configured that way.
+	if days, clamped := clampRetentionDays(c.BackupRetentionDays); clamped {
+		s.logger.Warn(
+			"retention period adjusted for a gate backup",
+			"configured", c.BackupRetentionDays,
+			"used", days,
+		)
+		c.BackupRetentionDays = days
 	}
 
 	var stats *Stats

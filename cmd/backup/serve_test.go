@@ -108,6 +108,78 @@ func TestValidateRequestFallsBackToTheDefaultArchive(t *testing.T) {
 	}
 }
 
+func i32(v int32) *int32 { return &v }
+
+func TestValidateRequestBoundsRetention(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "data")
+	archive := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(archive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BACKUP_MAX_RETENTION_DAYS", "")
+
+	tests := []struct {
+		name    string
+		days    *int32
+		wantErr bool
+	}{
+		{name: "unset uses the configured default"},
+		{name: "one day", days: i32(1)},
+		{name: "the maximum", days: i32(defaultMaxRetentionDays)},
+		{name: "forever is refused", days: i32(-1), wantErr: true},
+		{name: "another negative value is refused", days: i32(-2), wantErr: true},
+		{name: "zero is refused", days: i32(0), wantErr: true},
+		{name: "above the maximum is refused", days: i32(defaultMaxRetentionDays + 1), wantErr: true},
+		{name: "an implausible value is refused", days: i32(99999), wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := backupRequest{Source: source, Archive: archive, RetentionDays: tc.days}
+			err := validateRequest(&req)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected an error, got none")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestClampRetentionDays(t *testing.T) {
+	t.Setenv("BACKUP_MAX_RETENTION_DAYS", "")
+	tests := []struct {
+		configured int32
+		want       int32
+		clamped    bool
+	}{
+		{configured: 30, want: 30},
+		{configured: 365, want: 365},
+		{configured: -1, want: 365, clamped: true},
+		{configured: 0, want: 365, clamped: true},
+		{configured: 99999, want: 365, clamped: true},
+	}
+	for _, tc := range tests {
+		got, clamped := clampRetentionDays(tc.configured)
+		if got != tc.want || clamped != tc.clamped {
+			t.Errorf("clampRetentionDays(%d) = (%d, %v), want (%d, %v)", tc.configured, got, clamped, tc.want, tc.clamped)
+		}
+	}
+
+	t.Setenv("BACKUP_MAX_RETENTION_DAYS", "90")
+	if got, clamped := clampRetentionDays(120); got != 90 || !clamped {
+		t.Errorf("with an upper bound of 90: clampRetentionDays(120) = (%d, %v), want (90, true)", got, clamped)
+	}
+	if got, clamped := clampRetentionDays(60); got != 60 || clamped {
+		t.Errorf("with an upper bound of 90: clampRetentionDays(60) = (%d, %v), want (60, false)", got, clamped)
+	}
+}
+
 func TestConfigFromRequestUsesRequestValues(t *testing.T) {
 	req := &backupRequest{
 		JobID:   "approval-1",
