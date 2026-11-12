@@ -161,7 +161,40 @@ func configFromRequest(req *backupRequest) (*Config, error) {
 	return c, nil
 }
 
+// validArtifactName rejects names that are used as file names but carry a path
+// separator or a parent reference. Without this check a caller can move the
+// staged archive out of /tmp (filename) or change the artifact name the job id
+// is supposed to derive (job_id).
+func validArtifactName(field, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("%s must not be empty", field)
+	}
+	if len(name) > 128 {
+		return fmt.Errorf("%s %q is longer than 128 characters", field, name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("%s %q must not contain a path separator", field, name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf(`%s %q must not contain ".."`, field, name)
+	}
+	if name != filepath.Base(name) {
+		return fmt.Errorf("%s %q is not a plain file name", field, name)
+	}
+	return nil
+}
+
 func validateRequest(req *backupRequest) error {
+	if req.JobID != "" {
+		if err := validArtifactName("job_id", req.JobID); err != nil {
+			return err
+		}
+	}
+	if req.Filename != "" {
+		if err := validArtifactName("filename", req.Filename); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(req.Source) == "" {
 		return fmt.Errorf("source is required")
 	}

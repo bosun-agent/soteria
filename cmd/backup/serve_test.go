@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -175,5 +176,49 @@ func TestJobRegistryRejectsDuplicateInHandler(t *testing.T) {
 	got, ok := r.get("a")
 	if !ok || got.Status != jobStatusPending {
 		t.Fatalf("unexpected registry result: %+v ok=%v", got, ok)
+	}
+}
+
+// The caller-supplied filename is used as the staged file name, and the job id
+// ends up in the generated file name. Both have to stay inside the directories
+// the server owns.
+func TestValidateRequestRejectsNamesThatEscapeTheArchive(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "data")
+	archive := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(archive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		filename string
+		jobID    string
+		wantErr  bool
+	}{
+		{name: "plain filename", filename: "custom.tar.gz"},
+		{name: "plain job id", jobID: "approval-42"},
+		{name: "filename with a parent reference", filename: "../x.tar.gz", wantErr: true},
+		{name: "filename with a separator", filename: "nested/x.tar.gz", wantErr: true},
+		{name: "filename that is a bare parent reference", filename: "..", wantErr: true},
+		{name: "job id with a parent reference", jobID: "../../escaped", wantErr: true},
+		{name: "job id with a backslash", jobID: `evil\name`, wantErr: true},
+		{name: "job id longer than 128 characters", jobID: strings.Repeat("a", 129), wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := backupRequest{Source: source, Archive: archive, Filename: tc.filename, JobID: tc.jobID}
+			err := validateRequest(&req)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected an error, got none")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
 	}
 }
