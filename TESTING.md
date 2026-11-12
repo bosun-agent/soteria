@@ -77,7 +77,8 @@ $ sleep 2 && curl -s http://127.0.0.1:18080/healthz
 {"status":"ok"}
 ```
 
-`-http-addr` defaults to `:8080`; if you change it, change the port mapping too.
+`-http-addr` defaults to `:8080` and is read whether it is passed before or after
+`serve`; if you change it, change the port mapping too.
 If `healthz` does not answer, check `docker logs soteria-test` — the usual causes
 are the `/archive` mount and its permissions.
 
@@ -101,6 +102,17 @@ $ jq -r '.status, .artifact.name, .artifact.size' /tmp/soteria-test/resp.json
 succeeded
 job-local-test-1.tar.gz
 <size in bytes>
+```
+
+Omitting `archive` is allowed: the API falls back to the container's default
+(`/archive`), so a minimal body only names the source.
+
+```console
+$ curl -s -o /tmp/soteria-test/resp2.json -w 'HTTP=%{http_code}\n' \
+    -X POST http://127.0.0.1:18080/v1/backups \
+    -H 'Content-Type: application/json' \
+    -d '{"job_id":"local-test-2","source":"/backup/target","wait":true}'
+HTTP=200
 ```
 
 ## 6. Verify the artifact independently
@@ -138,9 +150,21 @@ $ H='Content-Type: application/json'
 $ curl -s -w ' HTTP=%{http_code}\n' -X POST $P -H "$H" \
     -d '{"source":"/nope","archive":"/archive","wait":true}'
 
-# missing archive -> 400
+# archive that does not exist -> 400
 $ curl -s -w ' HTTP=%{http_code}\n' -X POST $P -H "$H" \
-    -d '{"source":"/backup/target","wait":true}'
+    -d '{"source":"/backup/target","archive":"/nope","wait":true}'
+
+# a file name that could leave the archive directory -> 400
+$ curl -s -w ' HTTP=%{http_code}\n' -X POST $P -H "$H" \
+    -d '{"source":"/backup/target","archive":"/archive","filename":"../x.tar.gz","wait":true}'
+
+# a retention period the gate does not allow (forever) -> 400
+$ curl -s -w ' HTTP=%{http_code}\n' -X POST $P -H "$H" \
+    -d '{"source":"/backup/target","archive":"/archive","retention_days":-1,"wait":true}'
+
+# a body that is not declared as JSON -> 415
+$ curl -s -w ' HTTP=%{http_code}\n' -X POST $P \
+    -d '{"source":"/backup/target","archive":"/archive"}'
 
 # duplicate job_id -> 409
 $ curl -s -w ' HTTP=%{http_code}\n' -X POST $P -H "$H" \
@@ -150,7 +174,9 @@ $ curl -s -w ' HTTP=%{http_code}\n' -X POST $P -H "$H" \
 $ curl -s -w ' HTTP=%{http_code}\n' http://127.0.0.1:18080/v1/backups/nope
 ```
 
-Expected: `400`, `400`, `409`, `404`.
+Expected: `400` (unreadable source), `400` (archive that does not exist), `400`
+(filename), `400` (retention), `415` (media type), `409` (duplicate job id),
+`404` (unknown job).
 
 To exercise the "run fails" path, restart the container with a read-only archive
 and request a backup: the response is `500` and the body carries the underlying

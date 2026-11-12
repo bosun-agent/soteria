@@ -41,6 +41,8 @@ services:
     # The upstream image sets an ENTRYPOINT, so override it to run the API
     # instead of the built-in scheduler.
     entrypoint: ["/usr/bin/backup"]
+    # Inside the container the API keeps the default address. It has to listen on
+    # every interface there, otherwise the published port cannot reach it.
     command: ["serve", "-http-addr", ":8080"]
     restart: unless-stopped
     environment:
@@ -49,8 +51,13 @@ services:
       TZ: Asia/Seoul
       # A gate must not block for an hour when another run is in flight.
       LOCK_TIMEOUT: 10s
+      # Upper bound for the retention a request may ask for (default 365).
+      BACKUP_MAX_RETENTION_DAYS: 90
     ports:
-      - "8080:8080"
+      # Publish on loopback only: the API authenticates nobody, so every host
+      # that can reach the port can start a run. 18081 stays out of the way of
+      # docker-agent's own `serve api`, which binds 8080 on the host.
+      - "127.0.0.1:18081:8080"
     volumes:
       # The volume to protect has to be mounted before the service starts.
       - app_data:/backup/target:ro
@@ -59,7 +66,28 @@ services:
 
 Note that no Docker socket is mounted. Stopping and restarting the containers
 that use the volume is the responsibility of the caller: it already owns the
-destructive action and knows when the application has to be quiesced.
+destructive action and knows when the application has to be quiesced. Treat that
+as a required step, not as an option.
+
+## Consistency: stop the application before archiving it
+
+**If the volume belongs to an application with a database, stop the container or
+dump the database before requesting the backup.** The run archives the files as
+they are on disk. A database that keeps writing while the archive is created
+produces a set of files that belong to different points in time, and restoring
+that gives a database which may not open, or which has lost or duplicated
+transactions. The artifact then passes the gate while being unusable for exactly
+the rollback it was taken for.
+
+The API cannot do this for you: it does not hold the Docker socket, so it cannot
+stop anything, it reports no field that says whether the application was stopped,
+and the MCP tools it exposes cannot stop a container either. A workflow that must
+not depend on discipline should:
+
+1. stop the container (or run the dump command),
+2. call `backup_volume` and wait for the result,
+3. verify `artifact.sha256` against the file on disk,
+4. only then perform the destructive action and start the container again.
 
 Because a container can only archive paths that are mounted into it, a single
 instance covers a fixed set of volumes. To protect volumes that are discovered
@@ -75,11 +103,11 @@ Starts a backup run.
 | Field | Required | Description |
 | --- | --- | --- |
 | `source` | yes | Path inside the container to archive. |
-| `archive` | yes | Directory the archive is written to. Must already exist and is used to verify the artifact. |
+| `archive` | no | Directory the archive is written to. Defaults to `BACKUP_ARCHIVE`, or to `/archive`. It has to exist already, because the artifact on disk is what gets verified. |
 | `job_id` | no | Correlation id. Defaults to a random id. Supplying the id of the approval request makes the backup traceable. |
 | `volume` | no | Label for the volume being backed up. Reporting only. |
 | `filename` | no | Overrides the file name. Defaults to `job-<job_id>.tar.gz`, so the artifact can be derived from the job id. |
-| `retention_days` | no | Overrides `BACKUP_RETENTION_DAYS`. Use `-1` to keep the artifact available for rollback. |
+| `retention_days` | no | Overrides `BACKUP_RETENTION_DAYS`. Accepted range is `1` to `BACKUP_MAX_RETENTION_DAYS` (default `365`); anything outside it is refused with `400`. A gate backup is never kept forever. |
 | `wait` | no | When `true`, the request blocks until the run finishes and returns the final result. |
 
 Asynchronous (default) response, `202 Accepted`:
@@ -125,7 +153,8 @@ Returns `{"status":"ok"}` once the process is listening.
 | --- | --- |
 | `202` | Run accepted, poll `GET /v1/backups/{job_id}`. |
 | `200` | Run finished successfully and the artifact was verified. |
-| `400` | Invalid request, for example a missing or unreadable `source`, or a missing `archive`. |
+| `400` | Invalid request: a missing or unreadable `source`, an `archive` that does not exist, a `filename` or `job_id` carrying a path separator or `..`, or a `retention_days` outside the allowed range. |
+| `415` | The body was not sent as `Content-Type: application/json`. |
 | `404` | Unknown `job_id`. |
 | `409` | The supplied `job_id` is already known. |
 | `500` | The run failed. The response body carries the error. |
@@ -149,8 +178,16 @@ is only reached when the backup was created, found on disk and hashed.
 
 This fork does not add a restore command. Restoring is a manual procedure, see
 [Restore volumes from a backup](./restore-volumes-from-backup.html) in the
-upstream documentation. Keep `BACKUP_RETENTION_DAYS=-1` or a separate archive directory
-for gate backups so that pruning cannot remove the artifact a rollback depends on.
+upstream documentation.
+
+Keep the gate's artifacts in a directory of their own, or pick a retention long
+enough for the approval they protect: pruning removes every file older than the
+retention period from the archive directory, including the artifact a rollback
+depends on. Keeping an artifact forever is deliberately not an option - a request
+may ask for at most `BACKUP_MAX_RETENTION_DAYS` (default 365) days, and a run
+whose effective period is negative (the upstream default) or above the maximum is
+clamped to the maximum and logs a warning. If something has to be archived longer
+than that, copy it out of the archive directory.
 
 ## Concurrency
 
